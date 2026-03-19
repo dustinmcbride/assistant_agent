@@ -105,3 +105,5 @@ docker run -p 5055:5055 \
   -v ./obsidian_vault:/vault \
   todo-buddy
 ```
+
+.
