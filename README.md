@@ -47,10 +47,16 @@ cp .env.example .env
 ### Run
 
 ```bash
-python server.py
+uv run server.py
 ```
 
 The server starts on port `5055`.
+
+### Help Scripts
+
+```bash
+source .env && python scripts/send_inbox.py
+```
 
 ## API
 
@@ -105,4 +111,4 @@ docker run -p 5055:5055 \
   -v ./obsidian_vault:/vault \
   todo-buddy
 ```
-.
+
