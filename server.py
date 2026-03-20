@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import telegram
+from agentmail import AgentMail
 from dotenv import load_dotenv
 from flask import Flask, abort, request, jsonify
 from langchain.agents import create_agent
@@ -25,6 +26,10 @@ SYSTEM_PROMPT_FILE = os.environ.get("SYSTEM_PROMPT_FILE", "")
 GITHUB_PAT = os.environ.get("GITHUB_PAT", "")
 # Full path: "username/private-repo/main/path/to/system_prompt.md"
 GITHUB_PROMPT_URL = os.environ.get("GITHUB_PROMPT_URL", "")
+AGENTMAIL_API_KEY = os.environ.get("AGENTMAIL_API_KEY", "")
+AGENTMAIL_INBOX_ID = os.environ.get("AGENTMAIL_INBOX_ID", "")
+
+mail_client = AgentMail(api_key=AGENTMAIL_API_KEY) if AGENTMAIL_API_KEY else None
 
 
 def _load_system_prompt_suffix() -> str:
@@ -102,6 +107,29 @@ def append_to_file(filename: str, text: str) -> str:
     return f"Appended to {filename}."
 
 
+@tool
+def send_email(to: str, subject: str, body: str) -> str:
+    """Send an email on behalf of the user.
+    Args:
+        to: Recipient email address.
+        subject: Email subject line.
+        body: Plain text email body.
+    """
+    if not mail_client:
+        return "Email is not configured."
+    try:
+        mail_client.inboxes.messages.send(
+            AGENTMAIL_INBOX_ID,
+            to=to,
+            subject=subject,
+            text=body,
+        )
+        print(f"[email] to: {to} | subject: {subject}\n{body}")
+        return f"Email sent to {to}."
+    except Exception as e:
+        return f"Failed to send email: {e}"
+
+
 # ---------------------------------------------------------------------------
 # Agent setup
 # ---------------------------------------------------------------------------
@@ -151,6 +179,12 @@ You can have conversations, answer questions, and help manage the user's Obsidia
 You have access to the user's vault and can read lists, add items, and help organize notes.
 When the user asks to add something, file it appropriately. When they ask what's on a list, read it and summarize it clearly.
 
+You may also send an email on the user's behalf using the send_email tool. Before calling send_email you MUST:
+1. Show the full draft (to, subject, and body) in Telegram.
+2. Ask the user to confirm.
+3. Only call send_email after the user explicitly confirms (e.g. "yes", "send it", "go ahead").
+Never send an email without confirmation.
+
 Be conversational and helpful. You may ask clarifying questions when needed."""
 
 TELEGRAM_HISTORY_LIMIT = 20
@@ -166,7 +200,7 @@ inbox_agent = create_agent(
 telegram_agent = create_agent(
     model=model,
     system_prompt=TELEGRAM_SYSTEM_PROMPT,
-    tools=[list_vault_files, read_file, append_to_file],
+    tools=[list_vault_files, read_file, append_to_file, send_email],
 )
 
 # In-memory conversation history for Telegram: list of {"role": ..., "content": ...}
