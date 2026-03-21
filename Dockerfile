@@ -24,4 +24,6 @@ COPY src/ .
 
 EXPOSE 5055
 
+ENV PYTHONUNBUFFERED=1
+
 CMD ["gunicorn", "--bind", "0.0.0.0:5055", "--workers", "1", "--threads", "4", "server:app"]
