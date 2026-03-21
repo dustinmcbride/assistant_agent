@@ -120,7 +120,8 @@ def _register_agentmail_webhook() -> None:
         print(f"[email] failed to register webhook: {e}")
 
 
+_register_telegram_webhook()
+_register_agentmail_webhook()
+
 if __name__ == "__main__":
-    _register_telegram_webhook()
-    _register_agentmail_webhook()
     app.run(host="0.0.0.0", port=5055, debug=False)

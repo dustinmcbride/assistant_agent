@@ -16,11 +16,12 @@ RUN uv pip install --system --no-cache \
     langgraph \
     python-dotenv \
     python-telegram-bot \
-    agentmail
+    agentmail \
+    gunicorn
 
 # Copy application code
 COPY src/ .
 
 EXPOSE 5055
 
-CMD ["python", "-u", "server.py"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5055", "--workers", "1", "--threads", "4", "server:app"]
