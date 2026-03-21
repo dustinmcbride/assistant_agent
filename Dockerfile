@@ -23,4 +23,4 @@ COPY src/ .
 
 EXPOSE 5055
 
-CMD ["python", "server.py"]
+CMD ["python", "-u", "server.py"]
