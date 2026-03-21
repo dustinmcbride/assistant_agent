@@ -11,5 +11,6 @@ wheels/
 
 # Environment variables
 .env
+prod.env
 
 obsidian_vault/*

@@ -47,7 +47,7 @@ cp .env.example .env
 ### Run
 
 ```bash
-uv run server.py
+uv run src/server.py
 ```
 
 The server starts on port `5055`.

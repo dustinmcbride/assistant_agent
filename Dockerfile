@@ -15,10 +15,11 @@ RUN uv pip install --system --no-cache \
     langchain-anthropic \
     langgraph \
     python-dotenv \
-    python-telegram-bot
+    python-telegram-bot \
+    agentmail
 
 # Copy application code
-COPY server.py ./
+COPY src/ .
 
 EXPOSE 5055
 
