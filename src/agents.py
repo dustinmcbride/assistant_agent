@@ -43,6 +43,7 @@ def _load_config() -> dict:
     if CONFIG_FILE_URL and GITHUB_PAT:
         url = f"https://raw.githubusercontent.com/{CONFIG_FILE_URL}"
         print(f"[config] Trying GitHub URL: {url}")
+        print(f"[config] Trying GitHub URL: {url}")
         req = urllib.request.Request(url, headers={"Authorization": f"token {GITHUB_PAT}"})
         try:
             with urllib.request.urlopen(req) as resp:
