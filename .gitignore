@@ -14,3 +14,4 @@ wheels/
 prod.env
 
 obsidian_vault/*
+config.json

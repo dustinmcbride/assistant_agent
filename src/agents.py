@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import threading
 import urllib.request
@@ -17,31 +18,70 @@ load_dotenv()
 OBSIDIAN_VAULT = os.environ.get("OBSIDIAN_VAULT", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-SYSTEM_PROMPT_FILE = os.environ.get("SYSTEM_PROMPT_FILE", "")
+TELEGRAM_CHAT_ID_2 = os.environ.get("TELEGRAM_CHAT_ID_2", "")
 GITHUB_PAT = os.environ.get("GITHUB_PAT", "")
-GITHUB_PROMPT_URL = os.environ.get("GITHUB_PROMPT_URL", "")
+SOUL_URL = os.environ.get("SOUL_URL", "")
+CONFIG_FILE_URL = os.environ.get("CONFIG_FILE_URL", "")
 AGENTMAIL_API_KEY = os.environ.get("AGENTMAIL_API_KEY", "")
 AGENTMAIL_INBOX_ID = os.environ.get("AGENTMAIL_INBOX_ID", "")
 
 mail_client = AgentMail(api_key=AGENTMAIL_API_KEY) if AGENTMAIL_API_KEY else None
 
 
-def _load_system_prompt_suffix() -> str:
-    """Load additional system prompt content from a local file or private GitHub repo."""
-    if SYSTEM_PROMPT_FILE:
-        local = Path(SYSTEM_PROMPT_FILE)
+def _load_config() -> dict:
+    """Load config from a local file (file://) or private GitHub repo."""
+    if CONFIG_FILE_URL.startswith("file://"):
+        local = Path(CONFIG_FILE_URL[7:])
+        print(f"[config] Trying local file: {local}")
         if local.exists():
-            return "\n\n" + local.read_text().strip()
-        print(f"[system_prompt] Local file not found: {SYSTEM_PROMPT_FILE}")
+            data = json.loads(local.read_text())
+            print(f"[config] Loaded successfully from local file ({len(data)} keys)")
+            return data
+        print(f"[config] Local file not found: {local}")
+        return {}
 
-    if GITHUB_PAT and GITHUB_PROMPT_URL:
-        url = f"https://raw.githubusercontent.com/{GITHUB_PROMPT_URL}"
+    if CONFIG_FILE_URL and GITHUB_PAT:
+        url = f"https://raw.githubusercontent.com/{CONFIG_FILE_URL}"
+        print(f"[config] Trying GitHub URL: {url}")
         req = urllib.request.Request(url, headers={"Authorization": f"token {GITHUB_PAT}"})
         try:
             with urllib.request.urlopen(req) as resp:
-                return "\n\n" + resp.read().decode().strip()
+                data = json.loads(resp.read().decode())
+                print(f"[config] Loaded successfully from GitHub ({len(data)} keys)")
+                return data
         except Exception as e:
-            print(f"[system_prompt] Failed to fetch from GitHub: {e}")
+            print(f"[config] Failed to fetch from GitHub: {e}")
+    else:
+        print(f"[config] No CONFIG_FILE_URL or GITHUB_PAT set, skipping")
+
+    return {}
+
+
+def _load_system_prompt_suffix() -> str:
+    """Load additional system prompt content from a local file (file://) or private GitHub repo."""
+    if SOUL_URL.startswith("file://"):
+        local = Path(SOUL_URL[7:])
+        print(f"[soul] Trying local file: {local}")
+        if local.exists():
+            content = local.read_text().strip()
+            print(f"[soul] Loaded successfully from local file ({len(content)} chars)")
+            return "\n\n" + content
+        print(f"[soul] Local file not found: {local}")
+        return ""
+
+    if SOUL_URL and GITHUB_PAT:
+        url = f"https://raw.githubusercontent.com/{SOUL_URL}"
+        print(f"[soul] Trying GitHub URL: {url}")
+        req = urllib.request.Request(url, headers={"Authorization": f"token {GITHUB_PAT}"})
+        try:
+            with urllib.request.urlopen(req) as resp:
+                content = resp.read().decode().strip()
+                print(f"[soul] Loaded successfully from GitHub ({len(content)} chars)")
+                return "\n\n" + content
+        except Exception as e:
+            print(f"[soul] Failed to fetch from GitHub: {e}")
+    else:
+        print(f"[soul] No SOUL_URL or GITHUB_PAT set, skipping")
 
     return ""
 
@@ -193,8 +233,15 @@ telegram_agent = create_agent(
     tools=[list_vault_files, read_file, add_todo, write_trip_file, send_email],
 )
 
-_telegram_history: list[dict] = []
+_telegram_histories: dict[str, list[dict]] = {}
 _telegram_history_lock = threading.Lock()
+
+_config = _load_config()
+ALLOWED_CHAT_IDS: set[str] = (
+    {str(cid) for cid in _config["telegram_chat_ids"]}
+    if "telegram_chat_ids" in _config
+    else {cid for cid in (TELEGRAM_CHAT_ID, TELEGRAM_CHAT_ID_2) if cid}
+)
 
 _pending_emails: dict[str, dict] = {}
 _pending_email_counter = 0
@@ -251,16 +298,17 @@ def get_pending_email(ref: str) -> dict | None:
         return _pending_emails.get(ref)
 
 
-def _get_telegram_messages(new_text: str) -> list[dict]:
+def _get_telegram_messages(chat_id: str, new_text: str) -> list[dict]:
     with _telegram_history_lock:
-        history = _telegram_history[-TELEGRAM_HISTORY_LIMIT:]
+        history = _telegram_histories.get(chat_id, [])[-TELEGRAM_HISTORY_LIMIT:]
         return history + [{"role": "user", "content": new_text}]
 
 
-def _append_telegram_history(user_text: str, assistant_reply: str) -> None:
+def _append_telegram_history(chat_id: str, user_text: str, assistant_reply: str) -> None:
     with _telegram_history_lock:
-        _telegram_history.append({"role": "user", "content": user_text})
-        _telegram_history.append({"role": "assistant", "content": assistant_reply})
+        hist = _telegram_histories.setdefault(chat_id, [])
+        hist.append({"role": "user", "content": user_text})
+        hist.append({"role": "assistant", "content": assistant_reply})
 
 
 def run_inbox_agent(text: str) -> None:
@@ -277,10 +325,10 @@ def run_inbox_agent(text: str) -> None:
 def run_telegram_agent(text: str, chat_id: str) -> None:
     print(f"[telegram] input: {text}")
     try:
-        messages = _get_telegram_messages(text)
+        messages = _get_telegram_messages(chat_id, text)
         result = telegram_agent.invoke({"messages": messages})
         reply = _log_usage_and_reply(result, "telegram")
-        _append_telegram_history(text, reply)
+        _append_telegram_history(chat_id, text, reply)
         asyncio.run(_send_telegram(chat_id, reply))
     except Exception as e:
         print(f"[telegram error] {e}")

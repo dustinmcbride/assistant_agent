@@ -13,6 +13,7 @@ from agents import (
     run_telegram_agent,
     notify_email,
     mail_client,
+    ALLOWED_CHAT_IDS,
 )
 
 load_dotenv()
@@ -22,7 +23,6 @@ app = Flask(__name__)
 OBSIDIAN_VAULT = os.environ.get("OBSIDIAN_VAULT", "")
 INBOX_API_KEY = os.environ.get("INBOX_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 TELEGRAM_WEBHOOK_URL = os.environ.get("TELEGRAM_WEBHOOK_URL", "")
 AGENTMAIL_WEBHOOK_URL = os.environ.get("AGENTMAIL_WEBHOOK_URL", "")
 
@@ -41,7 +41,7 @@ def telegram_webhook():
     chat_id = str(message.get("chat", {}).get("id", ""))
     text = (message.get("text") or "").strip()
 
-    if chat_id != TELEGRAM_CHAT_ID:
+    if chat_id not in ALLOWED_CHAT_IDS:
         print(f"[telegram] ignored message from unauthorized chat_id: {chat_id}")
         return "", 200
 
