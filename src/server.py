@@ -1,5 +1,6 @@
 import asyncio
 import os
+import secrets
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,9 @@ OBSIDIAN_VAULT = os.environ.get("OBSIDIAN_VAULT", "")
 INBOX_API_KEY = os.environ.get("INBOX_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_WEBHOOK_URL = os.environ.get("TELEGRAM_WEBHOOK_URL", "")
+TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
+if not TELEGRAM_WEBHOOK_SECRET:
+    raise RuntimeError("TELEGRAM_WEBHOOK_SECRET environment variable is not set")
 AGENTMAIL_WEBHOOK_URL = os.environ.get("AGENTMAIL_WEBHOOK_URL", "")
 
 
@@ -33,10 +37,16 @@ AGENTMAIL_WEBHOOK_URL = os.environ.get("AGENTMAIL_WEBHOOK_URL", "")
 
 @app.post("/telegram")
 def telegram_webhook():
+    token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if token != TELEGRAM_WEBHOOK_SECRET:
+        abort(403)
+
     data = request.get_json(silent=True) or {}
     message = data.get("message") or data.get("edited_message")
     if not message:
         return "", 200
+    
+    print(f"[telegram] received update: {data}")
 
     chat_id = str(message.get("chat", {}).get("id", ""))
     text = (message.get("text") or "").strip()
@@ -100,7 +110,7 @@ def _register_telegram_webhook() -> None:
         return
     try:
         bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
-        asyncio.run(bot.set_webhook(url=TELEGRAM_WEBHOOK_URL))
+        asyncio.run(bot.set_webhook(url=TELEGRAM_WEBHOOK_URL, secret_token=TELEGRAM_WEBHOOK_SECRET))
         print(f"[telegram] webhook registered: {TELEGRAM_WEBHOOK_URL}")
     except Exception as e:
         print(f"[telegram] failed to register webhook: {e}")

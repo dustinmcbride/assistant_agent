@@ -58,33 +58,42 @@ def _load_config() -> dict:
     return {}
 
 
-def _load_system_prompt_suffix() -> str:
-    """Load additional system prompt content from a local file (file://) or private GitHub repo."""
-    if SOUL_URL.startswith("file://"):
-        local = Path(SOUL_URL[7:])
-        print(f"[soul] Trying local file: {local}")
-        if local.exists():
-            content = local.read_text().strip()
-            print(f"[soul] Loaded successfully from local file ({len(content)} chars)")
-            return "\n\n" + content
-        print(f"[soul] Local file not found: {local}")
+def _fetch_text_from_url(url: str, label: str = "file") -> str:
+    """Load text content from a local file (file://) or private GitHub repo path."""
+    if not url:
         return ""
 
-    if SOUL_URL and GITHUB_PAT:
-        url = f"https://raw.githubusercontent.com/{SOUL_URL}"
-        print(f"[soul] Trying GitHub URL: {url}")
-        req = urllib.request.Request(url, headers={"Authorization": f"token {GITHUB_PAT}"})
+    if url.startswith("file://"):
+        local = Path(url[7:])
+        print(f"[{label}] Trying local file: {local}")
+        if local.exists():
+            content = local.read_text().strip()
+            print(f"[{label}] Loaded successfully from local file ({len(content)} chars)")
+            return content
+        print(f"[{label}] Local file not found: {local}")
+        return ""
+
+    if GITHUB_PAT:
+        gh_url = f"https://raw.githubusercontent.com/{url}"
+        print(f"[{label}] Trying GitHub URL: {gh_url}")
+        req = urllib.request.Request(gh_url, headers={"Authorization": f"token {GITHUB_PAT}"})
         try:
             with urllib.request.urlopen(req) as resp:
                 content = resp.read().decode().strip()
-                print(f"[soul] Loaded successfully from GitHub ({len(content)} chars)")
-                return "\n\n" + content
+                print(f"[{label}] Loaded successfully from GitHub ({len(content)} chars)")
+                return content
         except Exception as e:
-            print(f"[soul] Failed to fetch from GitHub: {e}")
+            print(f"[{label}] Failed to fetch from GitHub: {e}")
     else:
-        print(f"[soul] No SOUL_URL or GITHUB_PAT set, skipping")
+        print(f"[{label}] No GITHUB_PAT set, skipping")
 
     return ""
+
+
+def _load_system_prompt_suffix() -> str:
+    """Load additional system prompt content from SOUL_URL (legacy global soul)."""
+    content = _fetch_text_from_url(SOUL_URL, label="soul")
+    return ("\n\n" + content) if content else ""
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +219,7 @@ def _load_prompt(filename: str) -> str:
 
 
 INBOX_SYSTEM_PROMPT = _load_prompt("inbox.md")
-TELEGRAM_SYSTEM_PROMPT = _load_system_prompt_suffix() + "\n\n" + _load_prompt("telegram.md")
+_TELEGRAM_BASE_PROMPT = _load_prompt("telegram.md")
 EMAIL_TRIAGE_PROMPT = _load_prompt("email_triage.md")
 
 
@@ -228,21 +237,43 @@ inbox_agent = create_agent(
     tools=[list_vault_files, add_todo],
 )
 
-telegram_agent = create_agent(
-    model=_model,
-    system_prompt=TELEGRAM_SYSTEM_PROMPT,
-    tools=[list_vault_files, read_file, add_todo, write_trip_file, send_email],
-)
-
 _telegram_histories: dict[str, list[dict]] = {}
 _telegram_history_lock = threading.Lock()
 
 _config = _load_config()
-ALLOWED_CHAT_IDS: set[str] = (
-    {str(cid) for cid in _config["telegram_chat_ids"]}
-    if "telegram_chat_ids" in _config
-    else {cid for cid in (TELEGRAM_CHAT_ID, TELEGRAM_CHAT_ID_2) if cid}
-)
+
+# Build per-user agents from config["users"], falling back to env vars
+_users: dict[str, dict] = {}
+if "users" in _config:
+    _users = {str(cid): info for cid, info in _config["users"].items()}
+else:
+    # Legacy fallback: flat chat_ids list with no per-user soul
+    for cid in _config.get("telegram_chat_ids", []):
+        _users[str(cid)] = {"name": str(cid), "soul_url": ""}
+    for cid in (TELEGRAM_CHAT_ID, TELEGRAM_CHAT_ID_2):
+        if cid:
+            _users[cid] = {"name": cid, "soul_url": ""}
+
+ALLOWED_CHAT_IDS: set[str] = set(_users.keys())
+
+
+def _build_telegram_agent(chat_id: str):
+    user = _users.get(chat_id, {})
+    name = user.get("name", chat_id)
+    soul_url = user.get("soul_url", "")
+    soul = _fetch_text_from_url(soul_url, label=f"soul:{name}") if soul_url else _load_system_prompt_suffix()
+    suffix = ("\n\n" + soul) if soul else ""
+    system_prompt = f"You are talking to {name}.\n\n" + _TELEGRAM_BASE_PROMPT + suffix
+    return create_agent(
+        model=_model,
+        system_prompt=system_prompt,
+        tools=[list_vault_files, read_file, add_todo, write_trip_file, send_email],
+    )
+
+
+_telegram_agents: dict[str, object] = {
+    chat_id: _build_telegram_agent(chat_id) for chat_id in _users
+}
 
 _pending_emails: dict[str, dict] = {}
 _pending_email_counter = 0
@@ -327,7 +358,7 @@ def run_telegram_agent(text: str, chat_id: str) -> None:
     print(f"[telegram] input: {text}")
     try:
         messages = _get_telegram_messages(chat_id, text)
-        result = telegram_agent.invoke({"messages": messages})
+        result = _telegram_agents[chat_id].invoke({"messages": messages})
         reply = _log_usage_and_reply(result, "telegram")
         _append_telegram_history(chat_id, text, reply)
         asyncio.run(_send_telegram(chat_id, reply))
