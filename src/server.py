@@ -15,6 +15,7 @@ from agents import (
     notify_email,
     mail_client,
     ALLOWED_CHAT_IDS,
+    get_chat_id_for_user,
 )
 
 load_dotenv()
@@ -63,11 +64,15 @@ def telegram_webhook():
     return "", 200
 
 
-@app.post("/inbox")
-def inbox():
+@app.post("/inbox/<user>")
+def inbox(user: str):
     api_key = request.headers.get("X-API-Key") or request.args.get("api_key")
     if not api_key or api_key != INBOX_API_KEY:
         abort(401)
+
+    chat_id = get_chat_id_for_user(user)
+    if chat_id is None:
+        return jsonify({"error": f"unknown user: {user}"}), 404
 
     data = request.get_json(silent=True) or {}
     text = data.get("text", "").strip()
@@ -82,7 +87,7 @@ def inbox():
     with inbox_path.open("a") as f:
         f.write(f"\n{entry}")
 
-    threading.Thread(target=run_inbox_agent, args=(text,), daemon=True).start()
+    threading.Thread(target=run_inbox_agent, args=(text, chat_id), daemon=True).start()
 
     return jsonify({"ok": True}), 200
 

@@ -244,8 +244,11 @@ _config = _load_config()
 
 # Build per-user agents from config["users"], falling back to env vars
 _users: dict[str, dict] = {}
+
 if "users" in _config:
-    _users = {str(cid): info for cid, info in _config["users"].items()}
+    for name, info in _config["users"].items():
+        cid = str(info["telegram_chat_id"])
+        _users[cid] = {"name": name, "soul_url": info.get("soul_url", "")}
 else:
     # Legacy fallback: flat chat_ids list with no per-user soul
     for cid in _config.get("telegram_chat_ids", []):
@@ -254,7 +257,10 @@ else:
         if cid:
             _users[cid] = {"name": cid, "soul_url": ""}
 
-ALLOWED_CHAT_IDS: set[str] = set(_users.keys())
+# Build ALLOWED_CHAT_IDS from telegram_chat_id values in users
+
+ALLOWED_CHAT_IDS: set[str] = set(str(info["telegram_chat_id"]) for info in _config["users"].values())
+
 
 
 def _build_telegram_agent(chat_id: str):
@@ -343,13 +349,23 @@ def _append_telegram_history(chat_id: str, user_text: str, assistant_reply: str)
         hist.append({"role": "assistant", "content": assistant_reply})
 
 
-def run_inbox_agent(text: str) -> None:
+def get_chat_id_for_user(username: str) -> str | None:
+    """Return the telegram_chat_id for a user by name (case-insensitive), or None if not found."""
+    lower = username.lower()
+    for chat_id, info in _users.items():
+        if info["name"].lower() == lower:
+            return chat_id
+    return None
+
+
+def run_inbox_agent(text: str, chat_id: str | None = None) -> None:
     print(f"[inbox] input: {text}")
     try:
         result = inbox_agent.invoke({"messages": [{"role": "user", "content": text}]})
         reply = _log_usage_and_reply(result, "inbox")
-        if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-            asyncio.run(_send_telegram(TELEGRAM_CHAT_ID, reply))
+        target = chat_id or TELEGRAM_CHAT_ID
+        if TELEGRAM_BOT_TOKEN and target:
+            asyncio.run(_send_telegram(target, reply))
     except Exception as e:
         print(f"[inbox error] {e}")
 

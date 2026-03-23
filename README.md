@@ -4,13 +4,13 @@ A personal inbox assistant that uses Claude AI to automatically classify and fil
 
 ## How it works
 
-1. You POST a text item to the `/inbox` endpoint
+1. You POST a text item to the `/inbox/<user>` endpoint
 2. The item is immediately appended to `Inbox.md` as a safety net
 3. A Claude-powered agent runs in the background:
    - Lists existing markdown files in your vault
    - Decides the best file for the item (e.g. groceries → `Grocery.md`, repairs → `House Projects.md`)
    - Appends a timestamped checkbox entry to that file, creating it if needed
-4. A Telegram message confirms where the item was filed (optional)
+4. A Telegram message is sent to the specified user confirming where the item was filed
 
 ## Setup
 
@@ -40,9 +40,26 @@ cp .env.example .env
 |---|---|
 | `ANTHROPIC_API_KEY` | Your Anthropic API key |
 | `OBSIDIAN_VAULT` | Path to your Obsidian vault **inside the container** (e.g. `/vault`) — mount your actual vault directory to this path |
-| `INBOX_API_KEY` | Secret key to authenticate requests to `/inbox` |
-| `TELEGRAM_BOT_TOKEN` | Bot token from [@BotFather](https://t.me/botfather) (optional) |
-| `TELEGRAM_CHAT_ID` | Your Telegram chat ID (optional) |
+| `INBOX_API_KEY` | Secret key to authenticate requests to `/inbox/<user>` |
+| `TELEGRAM_BOT_TOKEN` | Bot token from [@BotFather](https://t.me/botfather) |
+| `CONFIG_FILE_URL` | Path to `config.json` — use `file:///abs/path/config.json` locally or a GitHub raw path with `GITHUB_PAT` |
+| `GITHUB_PAT` | GitHub personal access token (only needed if `CONFIG_FILE_URL` points to a private repo) |
+
+Users and their Telegram chat IDs are defined in `config.json`:
+
+```json
+{
+  "users": {
+    "Zephyr": {
+      "telegram_chat_id": "123456789",
+      "soul_url": "optional-path-to-persona-prompt.md"
+    },
+    "Maren": {
+      "telegram_chat_id": "987654321"
+    }
+  }
+}
+```
 
 ### Run
 
@@ -54,15 +71,35 @@ The server starts on port `5055`.
 
 ### Help Scripts
 
+`scripts/send_inbox.py` sends items to the inbox from the command line.
+
 ```bash
-source .env && python scripts/send_inbox.py
+# Random todo, sent to first user in config
+python scripts/send_inbox.py
+
+# Specify a user
+python scripts/send_inbox.py -u Maren
+
+# Specify inbox text
+python scripts/send_inbox.py -i "Buy more coffee"
+
+# Both
+python scripts/send_inbox.py -u Maren -i "Buy more coffee"
+
+# Random item from a specific category
+python scripts/send_inbox.py --chore
+python scripts/send_inbox.py -u Maren --grocery
 ```
+
+Available category flags: `--chore`, `--grocery`, `--admin`, `--thought`
 
 ## API
 
-### `POST /inbox`
+### `POST /inbox/<user>`
 
-Accepts a todo item and files it into the vault.
+Accepts a todo item, files it into the vault, and notifies the specified user on Telegram.
+
+`<user>` must match a name in `config.json` (case-insensitive). Returns `404` if the user is not found.
 
 **Authentication:** Pass your `INBOX_API_KEY` via the `X-API-Key` header or `api_key` query parameter.
 
@@ -83,7 +120,7 @@ The response is immediate — the agent runs in the background.
 **Example:**
 
 ```bash
-curl -X POST http://localhost:5055/inbox \
+curl -X POST http://localhost:5055/inbox/Dustin \
   -H "X-API-Key: your-secret-key-here" \
   -H "Content-Type: application/json" \
   -d '{"text": "fix the leaky faucet in the bathroom"}'

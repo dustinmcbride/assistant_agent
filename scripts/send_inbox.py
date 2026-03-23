@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Send a to-do item to the local todo_buddy server."""
 
+import argparse
 import os
 import sys
 import json
@@ -140,6 +141,28 @@ HOST = os.environ.get("INBOX_HOST", "http://localhost:5055")
 API_KEY = os.environ.get("INBOX_API_KEY", "")
 
 
+def _load_config() -> dict:
+    env_path = Path(__file__).parent.parent / ".env"
+    config_url = os.environ.get("CONFIG_FILE_URL", "")
+    if config_url.startswith("file://"):
+        local = Path(config_url[7:])
+        if local.exists():
+            return json.loads(local.read_text())
+    elif not config_url:
+        # Fall back to local config.json next to the project root
+        local = Path(__file__).parent.parent / "config.json"
+        if local.exists():
+            return json.loads(local.read_text())
+    return {}
+
+
+def _first_user(config: dict) -> str | None:
+    users = config.get("users", {})
+    if users:
+        return next(iter(users))
+    return None
+
+
 
 LISTS = {
     "--chore": CHORES,
@@ -150,19 +173,36 @@ LISTS = {
 
 
 def main() -> None:
-    if len(sys.argv) >= 2 and sys.argv[1] in LISTS:
-        lst = LISTS[sys.argv[1]]
+    parser = argparse.ArgumentParser(description="Send a to-do item to the todo_buddy server.")
+    parser.add_argument("-u", "--user", help="Target user name (default: first user in config)")
+    parser.add_argument("-i", "--inbox", help="Inbox text to send")
+    parser.add_argument("extra", nargs="*", help="Shorthand list flag or free-form text")
+    args = parser.parse_args()
+
+    # Resolve user
+    config = _load_config()
+    user = args.user or _first_user(config)
+    if not user:
+        print("error: no user specified and no users found in config", file=sys.stderr)
+        sys.exit(1)
+
+    # Resolve text
+    if args.inbox:
+        text = args.inbox
+    elif args.extra and args.extra[0] in LISTS:
+        lst = LISTS[args.extra[0]]
         text = random.choice(lst)
-        print(f"Random ({sys.argv[1]}): {text}")
-    elif len(sys.argv) < 2:
+        print(f"Random ({args.extra[0]}): {text}")
+    elif args.extra:
+        text = " ".join(args.extra)
+    else:
         text = random.choice(CHORES + GROCERIES + LIFE_ADMIN + RANDOM_THOUGHTS)
         print(f"Random: {text}")
-    else:
-        text = " ".join(sys.argv[1:])
+
     payload = json.dumps({"text": text}).encode()
 
     req = urllib.request.Request(
-        f"{HOST}/inbox",
+        f"{HOST}/inbox/{user}",
         data=payload,
         headers={
             "Content-Type": "application/json",
