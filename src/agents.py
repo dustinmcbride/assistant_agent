@@ -242,23 +242,15 @@ _telegram_history_lock = threading.Lock()
 
 _config = _load_config()
 
-# Build per-user agents from config["users"], falling back to env vars
+# Build per-user agents from config["users"] 
 _users: dict[str, dict] = {}
 
 if "users" in _config:
     for name, info in _config["users"].items():
         cid = str(info["telegram_chat_id"])
         _users[cid] = {"name": name, "soul_url": info.get("soul_url", "")}
-else:
-    # Legacy fallback: flat chat_ids list with no per-user soul
-    for cid in _config.get("telegram_chat_ids", []):
-        _users[str(cid)] = {"name": str(cid), "soul_url": ""}
-    for cid in (TELEGRAM_CHAT_ID, TELEGRAM_CHAT_ID_2):
-        if cid:
-            _users[cid] = {"name": cid, "soul_url": ""}
 
 # Build ALLOWED_CHAT_IDS from telegram_chat_id values in users
-
 ALLOWED_CHAT_IDS: set[str] = set(str(info["telegram_chat_id"]) for info in _config["users"].values())
 
 
