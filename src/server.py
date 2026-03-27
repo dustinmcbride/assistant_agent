@@ -13,10 +13,10 @@ from agents import (
     run_inbox_agent,
     run_telegram_agent,
     notify_email,
-    mail_client,
     ALLOWED_CHAT_IDS,
     get_chat_id_for_user,
 )
+from tools.email import mail_client
 
 load_dotenv()
 
@@ -63,7 +63,7 @@ def telegram_webhook():
     threading.Thread(target=run_telegram_agent, args=(text, chat_id), daemon=True).start()
     return "", 200
 
-
+# This is not related in email, this is an inbox for dictations or quick notes
 @app.post("/inbox/<user>")
 def inbox(user: str):
     api_key = request.headers.get("X-API-Key") or request.args.get("api_key")
