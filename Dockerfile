@@ -8,16 +8,9 @@ RUN pip install uv
 # Copy dependency files
 COPY pyproject.toml uv.lock ./
 
-# Install dependencies (no venv inside container, install to system)
-RUN uv pip install --system --no-cache \
-    flask \
-    langchain \
-    langchain-anthropic \
-    langgraph \
-    python-dotenv \
-    python-telegram-bot \
-    agentmail \
-    gunicorn
+# Install dependencies from lockfile (no venv, install to system)
+RUN uv export --no-dev --no-hashes -o requirements.txt \
+    && uv pip install --system --no-cache -r requirements.txt gunicorn
 
 # Copy application code
 COPY src/ .
