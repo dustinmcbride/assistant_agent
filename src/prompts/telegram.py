@@ -1,4 +1,17 @@
-You are a personal assistant accessible via Telegram.
+def build_telegram_prompt(
+    trello_context: str = "",
+    obsidian_files: list[str] | None = None,
+) -> str:
+    """Build the Telegram agent system prompt, injecting Trello boards and Obsidian file list."""
+
+    obsidian_section = ""
+    if obsidian_files:
+        file_list = "\n".join(f"  - {f}" for f in obsidian_files)
+        obsidian_section = f"\n\n## Obsidian Vault Files\n{file_list}"
+
+    trello_section = f"\n\n{trello_context}" if trello_context else ""
+
+    return f"""You are a personal assistant accessible via Telegram.
 You can have conversations, answer questions, and help manage the user's Obsidian vault.
 
 You have access to the user's vault and can read lists, add items, and help organize notes.
@@ -14,3 +27,5 @@ You may also send an email on the user's behalf using the send_email tool. Befor
 Never send an email without confirmation.
 
 Be conversational and helpful. You may ask clarifying questions when needed.
+{obsidian_section}
+{trello_section}"""

@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from trello import TrelloClient
 
 load_dotenv()
 
@@ -99,6 +101,31 @@ def _load_system_prompt_suffix() -> str:
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
+
+@tool
+def get_cards_by_list(list_id: str) -> str:
+    """Get all cards in a Trello list, returning only the name, description, and completion status.
+    Use this to check for duplicates before adding a new card.
+    Args:
+        list_id: The Trello list ID (available from the Trello Boards & Lists context).
+    """
+    if not TRELLO_API_KEY or not TRELLO_TOKEN:
+        return "Trello is not configured."
+    try:
+        client = TrelloClient(api_key=TRELLO_API_KEY, token=TRELLO_TOKEN)
+        lst = client.get_list(list_id)
+        cards = lst.list_cards()
+        if not cards:
+            return "(no cards)"
+        lines = []
+        for card in cards:
+            status = "done" if card.closed else "open"
+            desc = f" — {card.description.strip()}" if card.description and card.description.strip() else ""
+            lines.append(f"- [{status}] {card.name}{desc}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to fetch cards: {e}"
+
 
 @tool
 def list_vault_files() -> str:
@@ -218,11 +245,12 @@ def _load_prompt(filename: str) -> str:
     return (_PROMPTS_DIR / filename).read_text().strip()
 
 
-INBOX_SYSTEM_PROMPT = _load_prompt("inbox.md")
-_TELEGRAM_BASE_PROMPT = _load_prompt("telegram.md")
-EMAIL_TRIAGE_PROMPT = _load_prompt("email_triage.md")
+from prompts.email_inbox_orchestrator import build_email_inbox_orchestrator_prompt
+from prompts.note import build_note_prompt
+from prompts.telegram import build_telegram_prompt
+from prompts.trip import build_trip_prompt 
 
-
+# 
 # ---------------------------------------------------------------------------
 # Agent setup
 # ---------------------------------------------------------------------------
@@ -231,11 +259,52 @@ TELEGRAM_HISTORY_LIMIT = 20
 
 _model = init_chat_model("claude-sonnet-4-6", temperature=0)
 
-inbox_agent = create_agent(
-    model=_model,
-    system_prompt=INBOX_SYSTEM_PROMPT,
-    tools=[list_vault_files, add_todo],
-)
+
+TRELLO_API_KEY = os.environ.get("TRELLO_API_KEY", "")
+TRELLO_TOKEN = os.environ.get("TRELLO_TOKEN", "")
+
+
+def _fetch_trello_context() -> str:
+    """Fetch all Trello boards and their lists, return a compact markdown summary for injection into system prompts."""
+    if not TRELLO_API_KEY or not TRELLO_TOKEN:
+        return ""
+    try:
+        client = TrelloClient(api_key=TRELLO_API_KEY, token=TRELLO_TOKEN)
+        boards = client.list_boards(board_filter="open")
+        lines = ["## Trello Boards & Lists\n"]
+        for board in boards:
+            lines.append(f"### Board: {board.name} (id: {board.id})")
+            for lst in board.list_lists(list_filter="open"):
+                lines.append(f"  - List: {lst.name} (id: {lst.id})")
+        result = "\n".join(lines)
+        print(f"[trello] loaded {len(boards)} boards")
+        print(result)
+        return result
+    except Exception as e:
+        print(f"[trello] failed to fetch context: {e}")
+        return ""
+
+
+async def _load_mcp_tools() -> list:
+    """Start the Trello MCP server and return its tools as LangChain tools."""
+    client = MultiServerMCPClient(
+        {
+            "trello": {
+                "command": "bunx",
+                "args": ["@delorenj/mcp-server-trello"],
+                "transport": "stdio",
+                "env": {
+                    "TRELLO_API_KEY": TRELLO_API_KEY,
+                    "TRELLO_TOKEN": TRELLO_TOKEN,
+                },
+            }
+        }
+    )
+    return await client.get_tools()
+
+
+_mcp_tools = asyncio.run(_load_mcp_tools())
+
 
 _telegram_histories: dict[str, list[dict]] = {}
 _telegram_history_lock = threading.Lock()
@@ -261,11 +330,14 @@ def _build_telegram_agent(chat_id: str):
     soul_url = user.get("soul_url", "")
     soul = _fetch_text_from_url(soul_url, label=f"soul:{name}") if soul_url else _load_system_prompt_suffix()
     suffix = ("\n\n" + soul) if soul else ""
-    system_prompt = f"You are talking to {name}.\n\n" + _TELEGRAM_BASE_PROMPT + suffix
+    trello_context = _fetch_trello_context()
+    obsidian_files = list_vault_files.invoke({}).splitlines()
+    base_prompt = build_telegram_prompt(trello_context=trello_context, obsidian_files=obsidian_files)
+    system_prompt = f"You are talking to {name}.\n\n" + base_prompt + suffix
     return create_agent(
         model=_model,
         system_prompt=system_prompt,
-        tools=[list_vault_files, read_file, add_todo, write_trip_file, send_email],
+        tools=[list_vault_files, read_file, add_todo, write_trip_file, send_email] + _mcp_tools,
     )
 
 
@@ -283,9 +355,14 @@ _email_triage_agent = None
 def _get_email_triage_agent():
     global _email_triage_agent
     if _email_triage_agent is None:
+        trello_context = _fetch_trello_context()
+        obsidian_files = list_vault_files.invoke({}).splitlines()
         _email_triage_agent = create_agent(
             model=init_chat_model("claude-haiku-4-5-20251001", temperature=0),
-            system_prompt=EMAIL_TRIAGE_PROMPT,
+            system_prompt=build_email_inbox_orchestrator_prompt(
+                trello_context=trello_context,
+                obsidian_files=obsidian_files,
+            ),
             tools=[list_vault_files, add_todo, write_trip_file],
         )
     return _email_triage_agent
@@ -352,12 +429,41 @@ def get_chat_id_for_user(username: str) -> str | None:
 
 def run_inbox_agent(text: str, chat_id: str | None = None) -> None:
     print(f"[inbox] input: {text}")
-    try:
-        result = inbox_agent.invoke({"messages": [{"role": "user", "content": text}]})
+    async def _run():
+        trello_context = _fetch_trello_context()
+        obsidian_files = list_vault_files.invoke({}).splitlines()
+
+        trip_agent = create_agent(
+            model=_model,
+            system_prompt=build_note_prompt(),
+            tools=[write_trip_file],
+        )
+
+        @tool
+        async def trip_agent_tool(content: str) -> str:
+            """Delegate travel/trip content to the trip filing agent.
+            Use this when the item contains flight bookings, hotel reservations, itineraries, or other trip details.
+            Args:
+                content: The full travel content to file.
+            """
+            result = await trip_agent.ainvoke({"messages": [{"role": "user", "content": content}]})
+            return result["messages"][-1].content
+
+        orchestrator = create_agent(
+            model=_model,
+            system_prompt=build_note_prompt(
+                trello_context=trello_context,
+                obsidian_files=obsidian_files,
+            ),
+            tools=[list_vault_files, add_todo, trip_agent_tool] + _mcp_tools,
+        )
+        result = await orchestrator.ainvoke({"messages": [{"role": "user", "content": text}]})
         reply = _log_usage_and_reply(result, "inbox")
         target = chat_id or TELEGRAM_CHAT_ID
         if TELEGRAM_BOT_TOKEN and target:
-            asyncio.run(_send_telegram(target, reply))
+            await _send_telegram(target, reply)
+    try:
+        asyncio.run(_run())
     except Exception as e:
         print(f"[inbox error] {e}")
 
